@@ -1,0 +1,7 @@
+{
+  "name": "EscenaViva",
+  "description": "Professional script rehearsal application with AI-powered scene partners and director feedback.",
+  "requestFramePermissions": [
+    "microphone"
+  ]
+}

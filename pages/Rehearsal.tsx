@@ -181,12 +181,17 @@ export const Rehearsal = () => {
     // Scroll active line into view
     if (scrollRef.current) {
         const el = document.getElementById(`line-${currentIndex}`);
-        if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        if (el) {
+            // Small delay to ensure layout is stable
+            setTimeout(() => {
+                el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            }, 100);
+        }
     }
 
     const lineChar = currentLine.character ? currentLine.character.trim() : "";
     const userChar = selectedCharacter ? selectedCharacter.trim() : "";
-    const isUserTurn = lineChar === userChar;
+    const isUserTurn = lineChar.toLowerCase() === userChar.toLowerCase();
 
     const processTurn = async () => {
         // 1. AI'S TURN (Dialogue)
@@ -286,10 +291,10 @@ export const Rehearsal = () => {
                          <Button 
                             fullWidth 
                             variant="ghost" 
-                            onClick={() => navigate('/scripts')}
+                            onClick={() => navigate('/')}
                             disabled={isReanalyzing}
                         >
-                            Cancelar y Volver
+                            Volver al Inicio
                         </Button>
                     </div>
                 </div>
@@ -302,7 +307,9 @@ export const Rehearsal = () => {
     return (
         <div className="flex flex-col items-center justify-center min-h-[60vh] space-y-8 p-6 pb-24">
              <div className="w-full max-w-2xl flex justify-between items-center md:hidden">
-                <button onClick={() => navigate('/scripts')} className="p-2 bg-white rounded-full shadow-sm text-textLight"><ArrowLeft size={20}/></button>
+                <button onClick={() => navigate('/')} className="p-2 bg-white rounded-full shadow-sm text-textLight hover:text-primary">
+                    <ArrowLeft size={20}/>
+                </button>
             </div>
             <div className="text-center space-y-2">
                 <h2 className="text-3xl font-extrabold text-textMain">Selecciona tu Rol</h2>
@@ -396,7 +403,10 @@ export const Rehearsal = () => {
       {/* Top Header */}
       <div className="flex items-center justify-between py-4 px-2 mb-4">
         <div className="flex items-center space-x-4">
-            <div className="relative w-12 h-12 flex items-center justify-center">
+             <button onClick={() => navigate('/')} className="p-2 bg-white rounded-full shadow-sm text-textLight hover:text-primary transition-colors">
+                <ArrowLeft size={20}/>
+            </button>
+            <div className="relative w-12 h-12 flex items-center justify-center hidden sm:flex">
                  <svg className="transform -rotate-90 w-12 h-12">
                     <circle cx="24" cy="24" r="20" stroke="#F3F4F6" strokeWidth="4" fill="transparent" />
                     <circle cx="24" cy="24" r="20" stroke="#00C49A" strokeWidth="4" fill="transparent" strokeDasharray={125.6} strokeDashoffset={125.6 - (125.6 * progress) / 100} className="transition-all duration-1000 ease-out" />
@@ -410,6 +420,14 @@ export const Rehearsal = () => {
         </div>
         
         <div className="flex items-center gap-2">
+             <button 
+                 onClick={() => setIsEyesClosedMode(!isEyesClosedMode)}
+                 className={`p-2 rounded-full border transition-colors ${isEyesClosedMode ? 'bg-primary text-white border-primary' : 'bg-white border-gray-100 text-textLight hover:text-primary'}`}
+                 title={isEyesClosedMode ? "Modo Memorización (Texto Oculto)" : "Texto Visible"}
+             >
+                 {isEyesClosedMode ? <EyeOff size={18} /> : <Eye size={18} />}
+             </button>
+
              <button onClick={() => setShowVoiceConfig(true)} className="p-2 rounded-full bg-white border border-gray-100 text-textLight hover:bg-gray-50 hover:text-primary">
                  <Settings2 size={18} />
              </button>
@@ -433,19 +451,19 @@ export const Rehearsal = () => {
       </div>
 
       {/* Script View */}
-      <div className="flex-1 overflow-y-auto px-2 pb-32 no-scrollbar space-y-6" ref={scrollRef}>
+      <div className="flex-1 overflow-y-auto px-2 pb-48 no-scrollbar space-y-6" ref={scrollRef}>
         {script.lines.map((line, idx) => {
             const isActive = idx === currentIndex;
             const lineChar = line.character ? line.character.trim() : "";
             const userChar = selectedCharacter ? selectedCharacter.trim() : "";
-            const isUser = lineChar === userChar;
+            const isUser = lineChar.toLowerCase() === userChar.toLowerCase();
             const isHidden = isEyesClosedMode && isUser && isActive;
 
             return (
                 <div 
                     id={`line-${idx}`}
                     key={line.id} 
-                    className={`transition-all duration-500 transform ${isActive ? 'scale-100 opacity-100' : 'scale-95 opacity-40 grayscale'}`}
+                    className={`transition-all duration-500 transform ${isActive ? 'scale-100 opacity-100 z-10' : 'opacity-60'}`}
                 >
                     {line.type === 'dialogue' ? (
                         <div className={`flex flex-col ${isUser ? 'items-end' : 'items-start'}`}>

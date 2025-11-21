@@ -1,5 +1,5 @@
 import React, { useState, createContext, useEffect } from 'react';
-import { HashRouter, Routes, Route, Navigate, useLocation } from 'react-router-dom';
+import { HashRouter, Routes, Route, Navigate, useLocation, Link } from 'react-router-dom';
 import { Sidebar } from './components/Sidebar';
 import { Dashboard } from './pages/Dashboard';
 import { ScriptUpload } from './pages/ScriptUpload';
@@ -60,7 +60,9 @@ const AppContent = () => {
                     >
                         <Menu size={24} />
                     </button>
-                    <span className="ml-4 font-bold text-xl text-textMain">Escena<span className="text-primary">Viva</span></span>
+                    <Link to="/" className="ml-4 font-bold text-xl text-textMain hover:opacity-80">
+                        Escena<span className="text-primary">Viva</span>
+                    </Link>
                     </div>
                 </div>
             )}

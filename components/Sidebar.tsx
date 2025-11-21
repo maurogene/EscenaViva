@@ -48,14 +48,14 @@ export const Sidebar = ({ isOpen, setIsOpen }: SidebarProps) => {
         } md:translate-x-0 overflow-y-auto no-scrollbar`}
       >
         <div className="p-8 flex items-center justify-between">
-          <div className="flex items-center space-x-2">
+          <Link to="/" onClick={() => setIsOpen(false)} className="flex items-center space-x-2 hover:opacity-80 transition-opacity cursor-pointer">
             <div className="bg-accent p-2 rounded-xl text-white transform rotate-3">
                 <Sparkles size={20} fill="currentColor" />
             </div>
             <div>
                 <h1 className="text-2xl font-bold text-textMain tracking-tight">Escena<span className="text-primary">Viva</span></h1>
             </div>
-          </div>
+          </Link>
           <button onClick={() => setIsOpen(false)} className="md:hidden text-textLight hover:text-textMain bg-gray-100 p-2 rounded-full">
             <X size={20} />
           </button>

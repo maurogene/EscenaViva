@@ -21,83 +21,118 @@ export const useSpeechRecognition = ({
   const recognitionRef = useRef<any>(null);
   const silenceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  // Use refs for callbacks to keep them fresh without triggering re-renders/re-effects
+  const onResultRef = useRef(onResult);
+  const onEndRef = useRef(onEnd);
+  const onSilenceRef = useRef(onSilence);
+
+  useEffect(() => {
+    onResultRef.current = onResult;
+    onEndRef.current = onEnd;
+    onSilenceRef.current = onSilence;
+  }, [onResult, onEnd, onSilence]);
+
   // Reset silence timer
   const resetSilenceTimer = useCallback(() => {
     if (silenceTimerRef.current) {
       clearTimeout(silenceTimerRef.current);
     }
     
-    if (isListening && onSilence) {
+    if (onSilenceRef.current) { // Only set timer if we have a handler
         silenceTimerRef.current = setTimeout(() => {
-            console.log("Silence detected, stopping...");
-            onSilence();
+            // console.log("Silence detected (timer), stopping...");
+            if (onSilenceRef.current) onSilenceRef.current();
         }, silenceDuration);
     }
-  }, [isListening, onSilence, silenceDuration]);
+  }, [silenceDuration]);
 
   useEffect(() => {
-    if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
-      const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-      recognitionRef.current = new SpeechRecognition();
-      recognitionRef.current.continuous = continuous;
-      recognitionRef.current.interimResults = true;
-      recognitionRef.current.lang = lang;
+    if (!('webkitSpeechRecognition' in window) && !('SpeechRecognition' in window)) {
+        console.warn("Speech recognition not supported in this browser.");
+        return;
+    }
 
-      recognitionRef.current.onresult = (event: any) => {
-        let finalTranscript = '';
-        
-        // Reset silence timer whenever we hear something
+    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    const recognition = new SpeechRecognition();
+    recognitionRef.current = recognition;
+
+    recognition.continuous = continuous;
+    recognition.interimResults = true;
+    recognition.lang = lang;
+
+    recognition.onresult = (event: any) => {
+        // Reset silence timer whenever we hear something (interim or final)
         resetSilenceTimer();
 
+        let finalTranscript = '';
         for (let i = event.resultIndex; i < event.results.length; ++i) {
           if (event.results[i].isFinal) {
             finalTranscript += event.results[i][0].transcript;
           }
         }
-        if (finalTranscript) {
-            onResult(finalTranscript);
+        
+        // Pass result if we have it
+        if (finalTranscript && onResultRef.current) {
+            onResultRef.current(finalTranscript);
         }
-      };
+    };
 
-      recognitionRef.current.onstart = () => {
+    recognition.onstart = () => {
         setIsListening(true);
-        // Start the timer immediately in case they never speak (optional, but good for flow)
-        // But usually we wait for at least some sound. 
-        // Let's only set it if we want to timeout empty silence too.
-      };
+    };
 
-      recognitionRef.current.onend = () => {
+    recognition.onend = () => {
         setIsListening(false);
         if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
-        if (onEnd) onEnd();
-      };
+        if (onEndRef.current) onEndRef.current();
+    };
 
-      recognitionRef.current.onerror = (event: any) => {
+    recognition.onerror = (event: any) => {
+        // Filter out benign errors to avoid console spam
+        if (event.error === 'no-speech' || event.error === 'aborted') {
+             // no-speech: User didn't speak. Standard behavior.
+             // aborted: We stopped it. Standard behavior.
+             return;
+        }
+        
         console.error("Speech recognition error", event.error);
         setIsListening(false);
         if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
-      };
-    }
-  }, [continuous, lang, onResult, onEnd, resetSilenceTimer]);
+    };
+
+    return () => {
+        // Cleanup: Abort recognition when component unmounts or config changes
+        if (recognition) {
+            recognition.abort();
+        }
+        if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
+    };
+  }, [continuous, lang, resetSilenceTimer]);
 
   const startListening = useCallback(() => {
     if (recognitionRef.current && !isListening) {
       try {
         recognitionRef.current.start();
-        setIsListening(true);
       } catch (e) {
-        console.error("Start error", e);
+        // Ignore errors if already started (race condition)
+        // console.debug("Start listening failed:", e);
       }
     }
   }, [isListening]);
 
   const stopListening = useCallback(() => {
-    if (recognitionRef.current && isListening) {
-      recognitionRef.current.stop();
-      setIsListening(false);
-      if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
+    if (recognitionRef.current) {
+      try {
+          recognitionRef.current.stop();
+      } catch (e) {
+          // console.debug("Stop listening failed:", e);
+      }
+      // We rely on onend to set isListening to false, but force it just in case
+      // to update UI immediately if needed. 
+      // However, strictly waiting for onend is safer for sync. 
+      // We'll let onend handle the state change.
     }
-  }, [isListening]);
+  }, []);
 
   return { isListening, startListening, stopListening };
 };

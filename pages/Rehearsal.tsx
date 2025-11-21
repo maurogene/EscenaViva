@@ -1,23 +1,29 @@
 import React, { useContext, useState, useEffect, useRef } from 'react';
-import { useParams } from 'react-router-dom';
+import { useParams, useNavigate } from 'react-router-dom';
 import { AppContext } from '../App';
-import { Mic, Pause, Play, SkipForward, Eye, EyeOff, ArrowLeft, PenTool, Edit3, Sparkles, Check, Volume2, Zap, Settings2, X } from 'lucide-react';
+import { Mic, Pause, Play, SkipForward, Eye, EyeOff, ArrowLeft, PenTool, Edit3, Sparkles, Check, Volume2, Zap, Settings2, X, FileText, User, Ear, RotateCcw, Loader2 } from 'lucide-react';
 import { Button } from '../components/Button';
 import { useSpeechRecognition } from '../hooks/useSpeechRecognition';
 import { useAudioRecorder } from '../hooks/useAudioRecorder';
-import { analyzeAudioPerformance } from '../services/geminiService';
+import { analyzeAudioPerformance, reanalyzeScript } from '../services/geminiService';
 import { ActingFeedback, Character } from '../types';
 
 export const Rehearsal = () => {
-  const { script, selectedCharacter, setSelectedCharacter, updateScriptLine, language, updateCharacterVoice } = useContext(AppContext);
+  const { script, setScript, selectedCharacter, setSelectedCharacter, updateScriptLine, language, updateCharacterVoice } = useContext(AppContext);
+  const navigate = useNavigate();
   const [currentIndex, setCurrentIndex] = useState(0);
   const [isEyesClosedMode, setIsEyesClosedMode] = useState(false);
   const [isDirectorMode, setIsDirectorMode] = useState(false);
-  const [isFluidMode, setIsFluidMode] = useState(false);
+  const [isFluidMode, setIsFluidMode] = useState(true); // Default to true for better UX
   const [feedback, setFeedback] = useState<ActingFeedback | null>(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [showVoiceConfig, setShowVoiceConfig] = useState(false);
   const [availableVoices, setAvailableVoices] = useState<SpeechSynthesisVoice[]>([]);
+  
+  // Reanalysis State
+  const [manualCharInput, setManualCharInput] = useState("");
+  const [isReanalyzing, setIsReanalyzing] = useState(false);
+
   const scrollRef = useRef<HTMLDivElement>(null);
 
   const { startRecording, stopRecording } = useAudioRecorder();
@@ -33,26 +39,30 @@ export const Rehearsal = () => {
       window.speechSynthesis.onvoiceschanged = loadVoices;
   }, []);
 
-  const handleSilenceDetected = async () => {
+  const handleSilenceDetected = () => {
       if (isFluidMode && isListening) {
-          stopListening();
+          // User finished speaking their line
           const pulseElement = document.getElementById('user-mic-button');
           if(pulseElement) {
               pulseElement.classList.add('scale-110', 'bg-green-500');
               setTimeout(() => pulseElement.classList.remove('scale-110', 'bg-green-500'), 300);
           }
+          // Small delay to ensure natural flow
           setTimeout(() => {
               setCurrentIndex(prev => prev + 1);
-          }, 500);
+          }, 600);
       }
   };
 
   const { isListening, startListening, stopListening } = useSpeechRecognition({
-    onResult: (text) => { console.log("Heard:", text) }, 
+    onResult: (text) => { 
+        // Optional: You could match text accuracy here in real-time
+        console.log("Heard:", text); 
+    }, 
     onSilence: handleSilenceDetected, 
     continuous: true,
     lang: language,
-    silenceDuration: 1200
+    silenceDuration: 1500 // Wait 1.5s of silence before assuming line is done
   });
 
   const getBestVoiceForCharacter = (charName: string): SpeechSynthesisVoice | null => {
@@ -70,9 +80,13 @@ export const Rehearsal = () => {
       const voiceCandidates = availableVoices.filter(v => v.lang.startsWith(langPrefix));
       
       if (character.gender === 'male') {
-          return voiceCandidates.find(v => v.name.includes('Male') || v.name.includes('David') || v.name.includes('Pablo') || v.name.includes('Mark')) || voiceCandidates[0];
+          return voiceCandidates.find(v => 
+            /\b(male|hombre|david|pablo|mark|george|daniel|raul)\b/i.test(v.name)
+          ) || voiceCandidates[0];
       } else if (character.gender === 'female') {
-          return voiceCandidates.find(v => v.name.includes('Female') || v.name.includes('Zira') || v.name.includes('Helena') || v.name.includes('Laura')) || voiceCandidates[0];
+           return voiceCandidates.find(v => 
+            /\b(female|mujer|zira|helena|laura|sabina|hazel|susan|monica)\b/i.test(v.name)
+          ) || voiceCandidates[0];
       }
       
       return voiceCandidates[0] || null;
@@ -80,10 +94,10 @@ export const Rehearsal = () => {
 
   const speakLine = (text: string, charName: string) => {
     if ('speechSynthesis' in window) {
-        window.speechSynthesis.cancel(); 
+        window.speechSynthesis.cancel(); // Stop any previous speech
         const utterance = new SpeechSynthesisUtterance(text);
         utterance.lang = language;
-        utterance.rate = 1.0;
+        utterance.rate = 1.0; // Normal speed
         
         const voice = getBestVoiceForCharacter(charName);
         if (voice) {
@@ -92,8 +106,8 @@ export const Rehearsal = () => {
 
         window.speechSynthesis.speak(utterance);
         
-        return new Promise((resolve) => {
-            utterance.onend = resolve;
+        return new Promise<void>((resolve) => {
+            utterance.onend = () => resolve();
         });
     }
     return Promise.resolve();
@@ -102,34 +116,28 @@ export const Rehearsal = () => {
   const toggleRecording = async () => {
       if (isListening) {
           stopListening();
-          setIsAnalyzing(true);
-          try {
-              const audioBase64 = await stopRecording();
-              if (script && audioBase64) {
-                  const currentLine = script.lines[currentIndex];
-                  if (!currentLine) return;
+          // Only analyze if manually toggled off in manual mode
+          if (!isFluidMode) {
+            setIsAnalyzing(true);
+            try {
+                const audioBase64 = await stopRecording();
+                if (script && audioBase64) {
+                    const currentLine = script.lines[currentIndex];
+                    if (!currentLine) return;
 
-                  const result = await analyzeAudioPerformance(currentLine.text || "", audioBase64, language, currentLine.directorNote);
-                  setFeedback(result);
-                  if (result.accuracy > 75) {
-                    setTimeout(() => {
-                        setFeedback(null);
-                        setCurrentIndex(prev => prev + 1);
-                    }, 6000);
-                  }
-              }
-          } catch (e) {
-              console.error(e);
-          } finally {
-              setIsAnalyzing(false);
+                    const result = await analyzeAudioPerformance(currentLine.text || "", audioBase64, language, currentLine.directorNote);
+                    setFeedback(result);
+                }
+            } catch (e) {
+                console.error(e);
+            } finally {
+                setIsAnalyzing(false);
+            }
           }
       } else {
           setFeedback(null);
-          const currentLine = script?.lines[currentIndex];
-          if (currentLine) {
-              startListening();
-              startRecording();
-          }
+          startListening();
+          if (!isFluidMode) startRecording();
       }
   };
 
@@ -140,87 +148,205 @@ export const Rehearsal = () => {
       }
   };
 
+  const handleReanalyze = async () => {
+    if (!script) return;
+    
+    setIsReanalyzing(true);
+    try {
+        const hints = manualCharInput.split(',').map(s => s.trim()).filter(s => s.length > 0);
+        const updatedScript = await reanalyzeScript(script, hints);
+        setScript(updatedScript);
+        setManualCharInput("");
+    } catch (e) {
+        alert("Error reanalizando el guion. Intenta de nuevo.");
+    } finally {
+        setIsReanalyzing(false);
+    }
+  };
+
+  // --- MAIN REHEARSAL LOOP ---
   useEffect(() => {
     if (!script || !selectedCharacter) return;
+    
+    // Safety check for end of script
+    if (currentIndex >= script.lines.length) {
+        alert("¡Ensayo Completado!");
+        // Reset or navigate away could go here
+        return; 
+    }
+
     const currentLine = script.lines[currentIndex];
     if (!currentLine) return;
 
+    // Scroll active line into view
+    if (scrollRef.current) {
+        const el = document.getElementById(`line-${currentIndex}`);
+        if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+
+    const lineChar = currentLine.character ? currentLine.character.trim() : "";
+    const userChar = selectedCharacter ? selectedCharacter.trim() : "";
+    const isUserTurn = lineChar === userChar;
+
     const processTurn = async () => {
-        if (scrollRef.current) {
-            const el = document.getElementById(`line-${currentIndex}`);
-            if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-        }
-
-        const lineChar = currentLine.character ? currentLine.character.trim() : "";
-        const userChar = selectedCharacter ? selectedCharacter.trim() : "";
-        const isUser = lineChar === userChar;
-
-        // AI TURN
-        if (!isUser && currentLine.type === 'dialogue') {
-            if(isListening) stopListening();
+        // 1. AI'S TURN (Dialogue)
+        if (!isUserTurn && currentLine.type === 'dialogue') {
+            if (isListening) stopListening(); // Ensure mic is off while AI speaks
             
-            setTimeout(async () => {
-                if (currentLine.text) {
-                    await speakLine(currentLine.text, lineChar);
-                }
-                setCurrentIndex(prev => prev + 1);
-            }, 500);
+            // Small pause before AI starts speaking for realism
+            await new Promise(r => setTimeout(r, 400));
+            
+            if (currentLine.text) {
+                await speakLine(currentLine.text, lineChar);
+            }
+            // AI done -> Next line
+            setCurrentIndex(prev => prev + 1);
 
-        // ACTION / PARENTHETICAL
+        // 2. ACTION / PARENTHETICAL (Non-spoken)
         } else if (currentLine.type !== 'dialogue') {
+            // Just wait a moment then skip
             setTimeout(() => setCurrentIndex(prev => prev + 1), 2000);
         
-        // USER TURN
+        // 3. USER'S TURN
         } else {
-            window.speechSynthesis.cancel();
-            if (isFluidMode && !isListening) {
+            window.speechSynthesis.cancel(); // Ensure AI is quiet
+            setFeedback(null); // Clear previous feedback
+            
+            if (isFluidMode) {
+                // Auto-start mic for user
+                // Delay slightly so user processes it's their turn
                 setTimeout(() => {
                     startListening();
-                }, 200);
+                }, 300);
             }
         }
     };
 
     processTurn();
-    return () => window.speechSynthesis.cancel();
+
+    // Cleanup on unmount or index change
+    return () => {
+        window.speechSynthesis.cancel();
+    };
   }, [currentIndex, script, selectedCharacter, isFluidMode]);
 
-  if (!script) return <div className="flex items-center justify-center h-full text-textLight">No hay guion cargado.</div>;
+  // --- RENDER HELPERS ---
+
+  if (!script) return (
+    <div className="flex flex-col items-center justify-center h-[80vh] text-center space-y-6 p-6">
+        <div className="bg-gray-50 p-6 rounded-full text-gray-400">
+            <FileText size={48} />
+        </div>
+        <div className="space-y-2">
+            <h2 className="text-2xl font-bold text-textMain">No hay guion activo</h2>
+            <Button onClick={() => navigate('/scripts')} icon={<FileText size={18} />}>
+                Ir a Mis Guiones
+            </Button>
+        </div>
+    </div>
+  );
 
   if (!selectedCharacter) {
-    const charactersToDisplay = script.characters.length > 0 
-        ? script.characters 
-        : [];
+      const charactersToDisplay = script.characters.length > 0 ? script.characters : [];
+      const langPrefix = language.split('-')[0];
+      const relevantVoices = availableVoices.filter(v => v.lang.startsWith(langPrefix));
+
+      if (charactersToDisplay.length === 0) {
+         return (
+            <div className="flex flex-col items-center justify-center min-h-[70vh] max-w-lg mx-auto p-6 text-center space-y-6">
+                <div className="bg-red-50 p-6 rounded-full text-red-500 shadow-sm mb-2"><X size={40} /></div>
+                
+                <div className="space-y-2">
+                    <h2 className="text-2xl font-extrabold text-textMain">No se encontraron personajes</h2>
+                    <p className="text-textLight font-medium">
+                        La IA no pudo identificar los nombres automáticamente. 
+                        <br/>Ingresa los nombres tú mismo para ayudar al análisis.
+                    </p>
+                </div>
+
+                <div className="w-full bg-white p-6 rounded-3xl shadow-card border-2 border-red-50">
+                    <label className="block text-left text-xs font-bold text-textLight uppercase tracking-wider mb-2">
+                        Nombres (separados por comas)
+                    </label>
+                    <textarea
+                        className="w-full h-24 bg-cream border-2 border-gray-200 rounded-xl p-4 text-textMain font-medium focus:border-primary focus:ring-0 outline-none resize-none mb-4"
+                        placeholder="Ej: Romeo, Julieta, Narrador..."
+                        value={manualCharInput}
+                        onChange={(e) => setManualCharInput(e.target.value)}
+                    />
+                    <div className="space-y-3">
+                         <Button 
+                            fullWidth 
+                            onClick={handleReanalyze} 
+                            disabled={isReanalyzing || !manualCharInput.trim()}
+                            icon={isReanalyzing ? <Loader2 className="animate-spin" /> : <RotateCcw size={18} />}
+                        >
+                            {isReanalyzing ? "Reanalizando..." : "Reanalizar Texto"}
+                        </Button>
+                         <Button 
+                            fullWidth 
+                            variant="ghost" 
+                            onClick={() => navigate('/scripts')}
+                            disabled={isReanalyzing}
+                        >
+                            Cancelar y Volver
+                        </Button>
+                    </div>
+                </div>
+            </div>
+         );
+    }
 
     const getLineCount = (charName: string) => script.lines.filter(l => l.character === charName && l.type === 'dialogue').length;
 
     return (
-        <div className="flex flex-col items-center justify-center min-h-[60vh] space-y-8 p-6">
+        <div className="flex flex-col items-center justify-center min-h-[60vh] space-y-8 p-6 pb-24">
+             <div className="w-full max-w-2xl flex justify-between items-center md:hidden">
+                <button onClick={() => navigate('/scripts')} className="p-2 bg-white rounded-full shadow-sm text-textLight"><ArrowLeft size={20}/></button>
+            </div>
             <div className="text-center space-y-2">
                 <h2 className="text-3xl font-extrabold text-textMain">Selecciona tu Rol</h2>
-                <p className="text-textLight">¿A quién interpretarás hoy?</p>
+                <p className="text-textLight">Elige tu personaje y configura las voces del elenco.</p>
             </div>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 w-full max-w-2xl">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-6 w-full max-w-2xl">
                 {charactersToDisplay.map(char => {
                     const count = getLineCount(char.name);
                     return (
-                        <button 
-                            key={char.name}
-                            onClick={() => setSelectedCharacter(char.name)}
-                            className="bg-white p-6 rounded-3xl shadow-card border-2 border-transparent hover:border-primary hover:scale-[1.02] transition-all group text-left relative overflow-hidden"
-                        >
-                            <div className="relative z-10">
-                                <div className="flex justify-between items-start mb-2">
-                                    <span className="text-xl font-bold text-textMain group-hover:text-primary block">{char.name}</span>
+                        <div key={char.name} className="bg-white rounded-3xl shadow-card border-2 border-transparent hover:border-primary transition-all group overflow-hidden flex flex-col">
+                            <div onClick={() => setSelectedCharacter(char.name)} className="p-6 cursor-pointer flex-1">
+                                <div className="flex justify-between items-start mb-3">
+                                    <div className="bg-gray-100 p-3 rounded-full text-gray-400 group-hover:text-primary group-hover:bg-primary/10 transition-colors">
+                                        <User size={24} />
+                                    </div>
                                     {char.gender !== 'neutral' && (
-                                        <span className="text-xs font-bold uppercase bg-gray-100 text-textLight px-2 py-0.5 rounded-md">{char.gender === 'male' ? 'Masc' : 'Fem'}</span>
+                                        <span className={`text-[10px] font-bold uppercase px-2 py-1 rounded-lg ${char.gender === 'male' ? 'bg-blue-50 text-blue-600' : 'bg-pink-50 text-pink-600'}`}>
+                                            {char.gender === 'male' ? 'Masc' : 'Fem'}
+                                        </span>
                                     )}
                                 </div>
-                                <span className="text-xs text-textLight font-medium bg-gray-100 px-3 py-1 rounded-full">
-                                    {count > 0 ? `${count} líneas` : 'Personaje'}
-                                </span>
+                                <h3 className="text-xl font-bold text-textMain mb-1">{char.name}</h3>
+                                <span className="text-xs text-textLight font-medium bg-gray-50 px-2 py-1 rounded-md inline-block">{count > 0 ? `${count} líneas` : 'Personaje'}</span>
                             </div>
-                        </button>
+                            <div className="bg-gray-50 px-6 py-4 border-t border-gray-100">
+                                <label className="flex items-center text-[10px] font-bold text-textLight uppercase tracking-wider mb-2">
+                                    <Volume2 size={12} className="mr-1.5" />
+                                    Voz del Personaje
+                                </label>
+                                <select 
+                                    className="w-full bg-white border border-gray-200 rounded-xl px-3 py-2 text-xs font-medium text-textMain outline-none focus:border-primary transition-colors cursor-pointer hover:border-gray-300"
+                                    value={char.voiceURI || ''}
+                                    onChange={(e) => updateCharacterVoice(char.name, e.target.value)}
+                                    onClick={(e) => e.stopPropagation()}
+                                >
+                                    <option value="">Automática (Recomendada)</option>
+                                    {relevantVoices.map(v => (
+                                        <option key={v.voiceURI} value={v.voiceURI}>
+                                            {v.name.length > 25 ? v.name.substring(0, 25) + '...' : v.name}
+                                        </option>
+                                    ))}
+                                </select>
+                            </div>
+                        </div>
                     );
                 })}
             </div>
@@ -284,18 +410,15 @@ export const Rehearsal = () => {
         </div>
         
         <div className="flex items-center gap-2">
-             <button 
-                onClick={() => setShowVoiceConfig(true)}
-                className="p-2 rounded-full bg-white border border-gray-100 text-textLight hover:bg-gray-50 hover:text-primary"
-                title="Configurar Voces"
-             >
+             <button onClick={() => setShowVoiceConfig(true)} className="p-2 rounded-full bg-white border border-gray-100 text-textLight hover:bg-gray-50 hover:text-primary">
                  <Settings2 size={18} />
              </button>
 
              <button 
                 onClick={() => {
-                    setIsFluidMode(!isFluidMode);
-                    if(isListening) stopListening(); 
+                    const newMode = !isFluidMode;
+                    setIsFluidMode(newMode);
+                    if(!newMode) stopListening(); 
                 }}
                 className={`flex items-center space-x-2 px-3 py-2 rounded-full transition-all border ${
                     isFluidMode 
@@ -304,20 +427,7 @@ export const Rehearsal = () => {
                 }`}
             >
                 <Zap size={16} className={isFluidMode ? "fill-current" : ""} />
-                <span className="text-xs font-bold hidden md:inline">{isFluidMode ? "Fluido" : "Manual"}</span>
-            </button>
-
-             <button 
-                onClick={() => setIsDirectorMode(!isDirectorMode)}
-                className={`p-2 rounded-full transition-colors ${isDirectorMode ? 'bg-accent text-white' : 'bg-white text-textLight hover:bg-gray-50'}`}
-            >
-                <PenTool size={18} />
-            </button>
-            <button 
-                onClick={() => setIsEyesClosedMode(!isEyesClosedMode)}
-                className={`p-2 rounded-full transition-colors ${isEyesClosedMode ? 'bg-textMain text-white' : 'bg-white text-textLight hover:bg-gray-50'}`}
-            >
-                {isEyesClosedMode ? <EyeOff size={18} /> : <Eye size={18} />}
+                <span className="text-xs font-bold hidden md:inline">{isFluidMode ? "Modo Fluido" : "Modo Manual"}</span>
             </button>
         </div>
       </div>
@@ -352,6 +462,12 @@ export const Rehearsal = () => {
                                     : 'bg-white text-textMain'
                                 }`
                             }>
+                                {isUser && isActive && isListening && (
+                                    <div className="absolute -top-3 -right-2 bg-accent text-white text-[10px] font-bold px-3 py-1 rounded-full shadow-lg flex items-center animate-pulse">
+                                        <Ear size={10} className="mr-1" /> Escuchando...
+                                    </div>
+                                )}
+
                                 {line.directorNote && (
                                     <div className={`text-xs mb-3 px-3 py-1.5 rounded-lg inline-flex items-center ${isUser && isActive ? 'bg-white/20 text-white' : 'bg-yellowSoft/20 text-yellow-700'}`}>
                                         <PenTool size={10} className="mr-1.5"/>
@@ -362,38 +478,6 @@ export const Rehearsal = () => {
                                 <p className={`text-lg md:text-xl font-medium leading-relaxed ${isHidden ? 'blur-md select-none' : ''}`}>
                                     {line.text}
                                 </p>
-
-                                {isActive && feedback && isUser && !isAnalyzing && !isFluidMode && (
-                                    <div className="mt-6 bg-white rounded-2xl p-5 shadow-lg text-textMain animate-[fadeIn_0.5s_ease-out]">
-                                        <div className="flex justify-between items-start mb-4">
-                                            <div>
-                                                <div className="inline-flex items-center bg-primary/10 text-primary px-2 py-1 rounded-md text-[10px] font-bold uppercase mb-1">
-                                                    <Sparkles size={10} className="mr-1"/> Análisis
-                                                </div>
-                                                <h4 className="font-bold text-lg">"{feedback.emotionDetected}"</h4>
-                                            </div>
-                                            <div className="text-center">
-                                                <div className="w-12 h-12 rounded-full border-4 border-primary flex items-center justify-center">
-                                                    <span className="text-sm font-bold text-primary">{feedback.accuracy}%</span>
-                                                </div>
-                                            </div>
-                                        </div>
-                                        <div className="space-y-3 mb-4">
-                                            <div>
-                                                <div className="flex justify-between text-xs font-bold text-textLight mb-1">
-                                                    <span>Energía</span>
-                                                    <span>{feedback.energy}/10</span>
-                                                </div>
-                                                <div className="h-2 w-full bg-gray-100 rounded-full overflow-hidden">
-                                                    <div className="h-full bg-accent rounded-full transition-all duration-1000" style={{ width: `${feedback.energy * 10}%` }}></div>
-                                                </div>
-                                            </div>
-                                        </div>
-                                        <p className="text-sm font-medium text-textMain bg-gray-50 p-3 rounded-xl">
-                                            💡 {feedback.feedback}
-                                        </p>
-                                    </div>
-                                )}
                             </div>
                         </div>
                     ) : (
@@ -418,7 +502,7 @@ export const Rehearsal = () => {
             <button 
                 id="user-mic-button"
                 onClick={toggleRecording}
-                disabled={isAnalyzing || isFluidMode}
+                disabled={isAnalyzing}
                 className={`w-20 h-20 rounded-full flex items-center justify-center shadow-lg transform transition-all duration-300 
                     ${isFluidMode 
                         ? (isListening ? 'bg-green-500 shadow-glow-primary scale-105' : 'bg-gray-300') 
@@ -429,8 +513,8 @@ export const Rehearsal = () => {
                     <div className="w-8 h-8 border-4 border-textLight border-t-transparent rounded-full animate-spin"></div>
                 ) : (
                     isListening 
-                        ? (isFluidMode ? <Mic size={32} color="white" className="animate-bounce-slight" /> : <Pause size={32} color="white" fill="white" />) 
-                        : (isFluidMode ? <div className="flex flex-col items-center"><span className="text-[10px] font-bold text-textMain uppercase">Auto</span></div> : <Mic size={32} color="white" />)
+                        ? <Mic size={32} color="white" className={isFluidMode ? "animate-bounce-slight" : ""} /> 
+                        : (isFluidMode ? <div className="flex flex-col items-center"><span className="text-[10px] font-bold text-textMain uppercase">Pausa</span></div> : <Mic size={32} color="white" />)
                 )}
             </button>
 

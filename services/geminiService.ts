@@ -8,8 +8,11 @@ export const parseScriptWithGemini = async (rawText: string): Promise<Script> =>
   
   const prompt = `
     Analyze the following text which is a movie or theatre script. 
-    1. Extract the lines with their types.
-    2. Identify all characters. For each character, infer their gender based on the name or context ('male', 'female', or 'neutral').
+    
+    Task:
+    1. Identify all unique characters. 
+    2. Infer the gender of each character based on their name (e.g. 'Romeo' is male, 'Juliet' is female) or context. Return 'male', 'female', or 'neutral'.
+    3. Extract all dialogue lines.
     
     Return a JSON object with:
     - title (infer or 'Untitled')
@@ -61,10 +64,24 @@ export const parseScriptWithGemini = async (rawText: string): Promise<Script> =>
     });
 
     let scriptData: any = {};
+    let jsonText = response.text || "{}";
+
+    // ROBUST JSON CLEANING
+    // Remove markdown code blocks if present
+    jsonText = jsonText.replace(/```json/g, '').replace(/```/g, '');
+    
+    // Use regex to find the JSON object specifically
+    const jsonMatch = jsonText.match(/\{[\s\S]*\}/);
+    if (jsonMatch) {
+        jsonText = jsonMatch[0];
+    }
+
     try {
-        scriptData = JSON.parse(response.text || "{}");
+        scriptData = JSON.parse(jsonText);
     } catch (e) {
-        console.warn("JSON Parse failed, using empty object");
+        console.warn("JSON Parse failed, using empty object", e);
+        // Final fallback: empty structure
+        scriptData = {};
     }
 
     // --- ROBUST CHARACTER EXTRACTION LOGIC ---
@@ -136,6 +153,123 @@ export const parseScriptWithGemini = async (rawText: string): Promise<Script> =>
   } catch (error) {
     console.error("Error parsing script with Gemini:", error);
     throw new Error("Failed to parse script.");
+  }
+};
+
+export const reanalyzeScript = async (currentScript: Script, characterHints: string[]): Promise<Script> => {
+  const model = "gemini-2.5-flash";
+
+  // Reconstruct text to send back to AI, as we might not have the raw text easily available in this context
+  // This effectively "flattens" the script back to text for re-parsing
+  const reconstructedText = currentScript.lines.map(l => {
+    if (l.type === 'dialogue') return `${l.character || 'UNKNOWN'}: ${l.text}`;
+    return `(${l.text})`; // actions
+  }).join('\n\n');
+
+  const prompt = `
+    I have a script where the character attribution was unsuccessful. 
+    Here are the CORRECT character names present in this scene: ${characterHints.join(', ')}.
+
+    Please re-analyze the text below. 
+    Strictly assign every dialogue line to one of the provided character names if possible.
+    Infer genders for these characters.
+    
+    Return the standard JSON structure with 'characters' and 'lines'.
+    Keep the original title/author if known, otherwise infer.
+  `;
+
+  try {
+    // We reuse the parsing logic by calling the same generation structure
+    // But we wrap it here to handle the specific prompt context
+     const response = await ai.models.generateContent({
+      model,
+      contents: [
+        { text: prompt },
+        { text: reconstructedText }
+      ],
+      config: {
+        responseMimeType: "application/json",
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            title: { type: Type.STRING },
+            author: { type: Type.STRING },
+            characters: { 
+                type: Type.ARRAY, 
+                items: { 
+                    type: Type.OBJECT,
+                    properties: {
+                        name: { type: Type.STRING },
+                        gender: { type: Type.STRING, enum: ['male', 'female', 'neutral'] }
+                    }
+                } 
+            },
+            lines: {
+              type: Type.ARRAY,
+              items: {
+                type: Type.OBJECT,
+                properties: {
+                  id: { type: Type.STRING },
+                  character: { type: Type.STRING },
+                  text: { type: Type.STRING },
+                  type: { type: Type.STRING, enum: ["dialogue", "action", "parenthetical"] },
+                  emotion: { type: Type.STRING }
+                }
+              }
+            }
+          }
+        }
+      }
+    });
+
+    // --- DUPLICATED PARSING LOGIC (Ideally refactor, but keeping self-contained for safety) ---
+    let scriptData: any = {};
+    let jsonText = response.text || "{}";
+    jsonText = jsonText.replace(/```json/g, '').replace(/```/g, '');
+    const jsonMatch = jsonText.match(/\{[\s\S]*\}/);
+    if (jsonMatch) jsonText = jsonMatch[0];
+    try { scriptData = JSON.parse(jsonText); } catch (e) { scriptData = {}; }
+
+    const characterMap = new Map<string, Character>();
+    const normalizeName = (name: string) => name ? name.trim().toUpperCase() : "";
+    const displayFormat = (name: string) => name ? name.trim() : "";
+
+    if (scriptData.characters && Array.isArray(scriptData.characters)) {
+        scriptData.characters.forEach((c: any) => {
+            if (c.name) {
+                const key = normalizeName(c.name);
+                characterMap.set(key, { name: displayFormat(c.name), gender: c.gender || 'neutral' });
+            }
+        });
+    }
+
+    const validLines: any[] = [];
+    if (scriptData.lines && Array.isArray(scriptData.lines)) {
+         scriptData.lines.forEach((l: any, idx: number) => {
+            if (!l || typeof l !== 'object' || !l.text) return;
+            l.id = l.id || `line-re-${idx}-${Date.now()}`;
+            if (l.character) {
+                const key = normalizeName(l.character);
+                if (key.length > 0 && !characterMap.has(key)) {
+                    characterMap.set(key, { name: displayFormat(l.character), gender: 'neutral' });
+                }
+                if (characterMap.has(key)) l.character = characterMap.get(key)?.name;
+            }
+            validLines.push(l);
+         });
+    }
+
+    const finalCharacters = Array.from(characterMap.values());
+
+    return {
+        ...currentScript, // Keep ID and metadata
+        characters: finalCharacters,
+        lines: validLines
+    };
+
+  } catch (error) {
+      console.error("Reanalysis failed", error);
+      throw error;
   }
 };
 
@@ -228,7 +362,9 @@ export const analyzeAudioPerformance = async (originalLine: string, audioBase64:
       }
     });
 
-    return JSON.parse(response.text || "{}");
+    let text = response.text || "{}";
+    text = text.replace(/```json/g, '').replace(/```/g, '');
+    return JSON.parse(text);
   } catch (error) {
     console.error("Error in audio analysis:", error);
     return {
